@@ -33,6 +33,7 @@ class App:
 
         self.titleFont = tkFont.Font(family="Helvetica", size=10)
         self.normalFont = tkFont.Font(family='Helvetica', size=8)
+        self.boldNormalFont = tkFont.Font(family='Helvetica', size=8, weight='bold')
         self.smallFont = tkFont.Font(family='Helvetica', size=7)
         self.boldSmallFont = tkFont.Font(family='Helvetica', size=7, weight='bold')
 
@@ -56,8 +57,8 @@ class App:
         self.layersFrame.grid(row=0, column=0, padx=self.paddingSmall, pady=self.paddingSmall/2, sticky='nw')
         self.kernelFrame = tk.Frame(self.settings)
         self.kernelFrame.grid(row=1, column=0, padx=self.paddingSmall, pady=self.paddingSmall/2, sticky='nw')
-        self.error_msg = tk.Label(self.settings, text="", foreground='red')
-        self.error_msg.grid(row=1, column=0, padx=self.paddingSmall, pady=self.paddingSmall/2, sticky='s')
+        self.error_msg = tk.Label(self.settings, text="", foreground='red', wraplength=150)
+        self.error_msg.grid(row=2, column=0, padx=self.paddingSmall, pady=self.paddingSmall/2, sticky='s')
 
         self.packLayersWidgets(self.layersFrame)
         self.packKernelWidgets(self.kernelFrame)
@@ -90,7 +91,7 @@ class App:
         self.kernelSizeFrame = tk.Frame(parent)
         self.kernelSizeFrame.grid(row=0, column=0, sticky='nw')
         self.kernelGridFrame = tk.Frame(parent)
-        self.kernelGridFrame.grid(row=1, column=0, sticky='nw')
+        self.kernelGridFrame.grid(row=2, column=0)
 
         self.packKernelSizeWidgts(self.kernelSizeFrame)
     
@@ -109,17 +110,17 @@ class App:
         self.kernel_num_rows.grid(row=0, column=1)
         
         timesSymbol = tk.Label(self.kernelSize, text="×", font=self.boldSmallFont)
-        timesSymbol.grid(row=0, column=2, padx=self.paddingSmall)
+        timesSymbol.grid(row=0, column=2, padx=self.paddingSmall/4)
         
         self.kernel_num_cols = tk.Entry(self.kernelSize, width=self.numberEntrySize)
         self.kernel_num_cols.grid(row=0, column=3)
         
-        self.empty_kernel_button = tk.Button(self.kernelSize, text="🡆", height=1, command=lambda: self.parseAddEmptyKernel(self.kernel_num_rows.get(), self.kernel_num_cols.get()))
-        self.empty_kernel_button['font'] = self.smallFont
-        self.empty_kernel_button.grid(row=0, column=4, padx=self.paddingSmall)
+        self.add_empty_kernel_bttn = tk.Button(self.kernelSize, text="+", command=lambda: self.parseAddEmptyKernel(self.kernel_num_rows.get(), self.kernel_num_cols.get()))
+        self.add_empty_kernel_bttn['font'] = self.boldNormalFont
+        self.add_empty_kernel_bttn.grid(row=0, column=4, padx=self.paddingSmall)
 
     def parseAddEmptyKernel(self, numRows, numCols):
-        if (self.kernels)>2:
+        if len(self.kernels)>=2:
             self.error("You can only have a maximum of 2 kernels at once")
             return
         try:
@@ -131,13 +132,48 @@ class App:
         except Exception:
             self.error("Kernel size must be an integer")
             return
+        self.error("")
+
+        self.kernels.append(numpy.zeros((numRows, numCols)))
+        self.packKernelGridWidgets(self.kernelGridFrame)
+
 
     def error(self, message):
         self.error_msg.config(text=message)
 
     def packKernelGridWidgets(self, parent):
-        parent = None
-        return
+        self.kernelFrames = []
+        for child in parent.winfo_children():
+            child.grid_forget()
+            child.destroy()
+        for kernelIdx in range(len(self.kernels)):
+            kernel = self.kernels[kernelIdx]
+            
+            kernelFrame = tk.Frame(parent)
+            kernelFrame.grid(row=0, column=kernelIdx, padx=self.paddingMedium)
+            self.kernelFrames.append(kernelFrame)
+            
+
+            kernelInputGridFrame = tk.Frame(kernelFrame)
+            kernelInputGridFrame.grid(row=0, column=0)
+            self.packKernelInputGridWidgets(kernelInputGridFrame, kernel)
+
+            remove_kernel_bttn = tk.Button(kernelFrame, text="-", command=lambda: self.removeKernel(kernel, kernelFrame))
+            remove_kernel_bttn['font'] = self.boldNormalFont
+            remove_kernel_bttn.grid(row=1, column=0)
+    
+    def packKernelInputGridWidgets(self, inputGridFrame, kernel):
+        pass
+
+    def removeKernel(self, kernel, kernelFrame):
+        for idx in range(len(self.kernels)):
+            if kernel is self.kernels[idx]:
+                self.kernels.pop(idx)
+                break
+        
+        self.packKernelGridWidgets(self.kernelGridFrame)
+
+        
     
     def loadImage(self):
         filePath = tk.filedialog.askopenfilename(filetypes=[("Image File","*.jpg *.png")])
