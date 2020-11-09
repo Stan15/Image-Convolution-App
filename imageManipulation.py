@@ -4,7 +4,7 @@ from tkinter import filedialog
 import PIL.Image, PIL.ImageTk 
 import time
 import numpy
-import scipy
+from scipy import ndimage
 from cv2 import cv2
 
 class App: 
@@ -14,9 +14,12 @@ class App:
         self.layers = ['red','green','blue']
         self.identicalLayers = {}
         self.layerIsMoving = False
-
+        
         self.kernels = []
         self.maxKernelSize = (5,5)
+        self.maxKernelCount = 1
+
+        self.getPresetKernels()
 
         self.defaultConvolvePadding = 0
         self.maxConvolvePadding = 3
@@ -45,6 +48,30 @@ class App:
 
         self.packDisplayWidgets(300,200)
         self.packSettingsWidgets()
+    
+    def getPresetKernels(self):
+        self.presetKernels = {
+            'mean-blur': numpy.array([
+                [1, 1, 1],
+                [1, 1, 1],
+                [1 ,1 ,1]
+            ]),
+            'gaussian-blur': numpy.array([
+                [1, 2, 1],
+                [2, 3, 2],
+                [1 ,2 ,1]
+            ]),
+            'sobel-X': numpy.array([
+                [-1, 0, 1],
+                [-2, 0, 2],
+                [-1, 0, 1]
+            ]),
+            'sobel-Y': numpy.array([
+                [-1, -2, -1],
+                [ 0,  0,  0],
+                [ 1,  2,  1]
+            ]),
+        }
     
     def packDisplayWidgets(self, defaultWidth, defaultHeight, minSize=100, maxSize=600):
         self.minCanvasSize = minSize
@@ -137,7 +164,7 @@ class App:
             int(value)
             return True
         except ValueError:
-            if value=='':
+            if value=='' or value=='-':
                 return True
             return False
 
@@ -172,26 +199,26 @@ class App:
                 self.transition(newImg, self.transitionDuration-elapsed, self.transitionCurve)
     
     def convolve(self, kernel, padding=0, stride=1):
-        imgCopy = self.imageMatrix.copy()
+        newImg = self.imageMatrix.copy()
 
-        kernel = numpy.flipud(numpy.fliplr(kernel))
-        kernShapeX = kernel.shape[0]
-        kernShapeY = kernel.shape[1]
-        imgShapeX = imgCopy.shape[0]
-        imgShapeY = imgCopy.shape[1]
-
-        outputX = int(((imgShapeX - kernShapeX + 2 * padding) / stride) + 1)
-        outputY = int(((imgShapeY - kernShapeY + 2 * padding) / strides) + 1)
-
-        output = numpy.zeros((outputX, outputY))
+        layers = self.getSelectedLayers()
+        layersIdx = [self.layers.index(i) for i in layers]
+        for layer in layersIdx:
+            newImg[:,:,layer] = ndimage.convolve(newImg[:,:,layer].astype('uint8'), kernel, mode='constant', cval=0.0)
         
-        if padding!=0:
-            imagePadded = numpy.zeros((imgCopy.shape[0] + padding*2, imgCopy.shape[1] + padding*2))
-            imagePadded[int(padding):int(-1 * padding), int(padding):int(-1 * padding)] = imgCopy
-        else:
-            imagePadded = imgCopy
+        newIdenticalLayers = {'red':['red'], 'green': ['green'], 'blue':['blue']}
+        layersConvolved = layers
+        for layer in layersConvolved:
+            identical = list(set(self.identicalLayers[layer])-set(layer))
+            for l in identical:
+                if l in layersConvolved:
+                    newIdenticalLayers[layer].append(l)
         
-        for 
+        self.resetIdenticalLayers(newIdenticalLayers)
+        
+        self.clearLayersSelection()
+
+        return newImg
 
 
     def calculateMaxStride(self):
@@ -241,26 +268,42 @@ class App:
         self.kernel_num_rows['validatecommand'] = (reg,'%P')
         self.kernel_num_cols['validatecommand'] = (reg,'%P')
         
-        self.add_empty_kernel_bttn = tk.Button(self.kernelSize, text="🡆", command=lambda: self.addEmptyKernel(self.kernel_num_rows.get(), self.kernel_num_cols.get()))
+        self.add_empty_kernel_bttn = tk.Button(self.kernelSize, text="🡆", command=lambda: self.addKernel(size=(self.kernel_num_rows.get(), self.kernel_num_cols.get())))
         self.add_empty_kernel_bttn['font'] = self.normalFont
         self.add_empty_kernel_bttn.grid(row=0, column=4, padx=self.paddingSmall)
 
-    def addEmptyKernel(self, numRows, numCols):
-        if len(self.kernels)>=2:
-            self.error("You can only have a maximum of 2 kernels at once")
-            return
-        try:
-            numRows = int(numRows)
-            numCols = int(numCols)
-            if numRows<=0 or numCols<=0 or numRows>self.maxKernelSize[0] or numCols>self.maxKernelSize[1]:
-                self.error("Kernel size must be in the given range [1,{}] x [1,{}]".format(self.maxKernelSize[0], self.maxKernelSize[1]))
-                return
-        except ValueError:
-            self.error("Kernel size must be an integer")
-            return
-        self.error("")
+        self.presetFiltersFrame = tk.Frame(parent)
+        self.presetFiltersFrame.grid(row=2, column=0, pady=self.paddingSmall/4, sticky='nw')
 
-        self.kernels.append(numpy.zeros((numRows, numCols)))
+        presetFiltersText = tk.Label(self.presetFiltersFrame, text="Preset filters: ", font=self.normalFont)
+        presetFiltersText.grid(row=0, column=0, padx=(0,self.paddingSmall))
+
+        self.selectedPreset = tk.StringVar(self.presetFiltersFrame)
+        self.presetOptions = tk.OptionMenu(self.presetFiltersFrame, self.selectedPreset, *self.presetKernels.keys(), command=lambda name: self.addKernel(kernel=self.presetKernels[name]))
+        self.presetOptions.grid(row=0, column=1)
+
+    def addKernel(self, kernel=None, size=None):
+        if len(self.kernels)>=self.maxKernelCount:
+            self.error("You can only have a maximum of {} kernels at once".format(self.maxKernelCount))
+            return
+        if size is None:
+            self.kernels.append(kernel)
+        else:
+            numRows = size[0]
+            numCols = size[1]
+            try:
+                numRows = int(numRows)
+                numCols = int(numCols)
+                if numRows<=0 or numCols<=0 or numRows>self.maxKernelSize[0] or numCols>self.maxKernelSize[1]:
+                    self.error("Kernel size must be in the given range [1,{}] x [1,{}]".format(self.maxKernelSize[0], self.maxKernelSize[1]))
+                    return
+            except ValueError:
+                self.error("Kernel size must be an integer")
+                return
+            self.error("")
+
+            self.kernels.append(numpy.zeros((numRows, numCols)))
+        
         self.packKernelGridWidgets(self.kernelGridFrame)
 
 
@@ -334,7 +377,7 @@ class App:
             self.setKernelIndexValue(kernelIdx, valueIdx, value)
             return True
         except ValueError:
-            if value=='':
+            if value=='' or value=='-':
                 self.setKernelIndexValue(kernelIdx, valueIdx, numpy.nan)
                 return True
             return False
