@@ -17,6 +17,10 @@ class App:
 
         self.kernels = []
         self.maxKernelSize = (5,5)
+
+        self.defaultConvolvePadding = 0
+        self.maxConvolvePadding = 3
+        self.defaultConvolveStride = 1
         
         self.settings = tk.Frame(root)
         self.settings.grid(row=0,column=0, sticky='n')
@@ -31,7 +35,7 @@ class App:
         self.paddingMedium = 10
         self.paddingLarge = 15
 
-        self.titleFont = tkFont.Font(family="Helvetica", size=10)
+        self.titleFont = tkFont.Font(family="Helvetica", size=10, weight='bold')
         self.normalFont = tkFont.Font(family='Helvetica', size=8)
         self.boldNormalFont = tkFont.Font(family='Helvetica', size=8, weight='bold')
         self.smallFont = tkFont.Font(family='Helvetica', size=7)
@@ -55,13 +59,21 @@ class App:
     def packSettingsWidgets(self):
         self.layersFrame = tk.Frame(self.settings)
         self.layersFrame.grid(row=0, column=0, padx=self.paddingSmall, pady=self.paddingSmall/2, sticky='nw')
+
         self.kernelFrame = tk.Frame(self.settings)
         self.kernelFrame.grid(row=1, column=0, padx=self.paddingSmall, pady=self.paddingSmall/2, sticky='nw')
-        self.error_msg = tk.Label(self.settings, text="", foreground='red', wraplength=150)
-        self.error_msg.grid(row=2, column=0, padx=self.paddingSmall, pady=self.paddingSmall/2, sticky='s')
+
+        self.convolveFrame = tk.Frame(self.settings)
+        self.convolveFrame.grid(row=2, column=0, padx=self.paddingSmall, pady=self.paddingSmall/2, sticky='nw')
+
+        self.error_msg_var = tk.StringVar()
+        self.error_msg_var.set("")
+        self.error_msg_label = tk.Label(self.settings, textvariable=self.error_msg_var, foreground='red', wraplength=150)
+        self.error_msg_label.grid(row=3, column=0, padx=self.paddingSmall, pady=self.paddingSmall/2, sticky='s')
 
         self.packLayersWidgets(self.layersFrame)
         self.packKernelWidgets(self.kernelFrame)
+        self.packConvolveWidgets(self.convolveFrame)
     
     def packLayersWidgets(self, parent):
         self.layersTitle = tk.Frame(parent)
@@ -87,17 +99,127 @@ class App:
         flatten = tk.Button(self.buttons, text="Flatten", command=lambda: self.flattenLayers(self.getSelectedLayers()))
         flatten.grid(row=0, column=1, rowspan=2, padx=(self.paddingSmall*2,0))
 
+    def packConvolveWidgets(self, parent):
+        self.convolveTitle = tk.Frame(parent)
+        self.convolveTitle.grid(row=0, column=0, sticky='nw')
+        convolve_title_text = tk.Label(self.convolveTitle, text="Convolution", font=self.titleFont)
+        convolve_title_text.grid(row=0, column=0, sticky='nw')
+
+        self.convolveSettingsFrame = tk.Frame(parent)
+        self.convolveSettingsFrame.grid(row=1, column=0, sticky='nw')
+
+        convol_padding_text = tk.Label(self.convolveSettingsFrame, text="padding:", font=self.normalFont)
+        convol_padding_text.grid(row=0, column=0, padx=(0,self.paddingSmall/2))
+
+        self.convolvePadding = tk.Entry(self.convolveSettingsFrame, width=self.numberEntrySize)
+        self.convolvePadding.grid(row=0, column=1)
+        self.convolvePadding.delete(0,'end')
+        self.convolvePadding.insert(0,self.defaultConvolvePadding)
+
+        convol_stride_text = tk.Label(self.convolveSettingsFrame, text="stride:", font=self.normalFont)
+        convol_stride_text.grid(row=0, column=2, padx=(self.paddingSmall,self.paddingSmall/2))
+
+        self.convolveStride = tk.Entry(self.convolveSettingsFrame, validate='key', width=self.numberEntrySize)
+        self.convolveStride.grid(row=0, column=3)
+        self.convolveStride.delete(0,'end')
+        self.convolveStride.insert(0,self.defaultConvolveStride)
+
+        reg = self.convolveSettingsFrame.register(self.isanInteger)
+        self.convolvePadding['validatecommand'] = (reg,'%P')
+        self.convolveStride['validatecommand'] = (reg,'%P')
+
+        self.convolve_bttn = tk.Button(self.convolveSettingsFrame, text="▶", command=lambda: self.parseConvolve())
+        self.convolve_bttn['font'] = self.titleFont
+        self.convolve_bttn.grid(row=1, column=0, columnspan=4, padx=self.paddingSmall, pady=self.paddingSmall)
+
+    def isanInteger(self, value):
+        try:
+            int(value)
+            return True
+        except ValueError:
+            if value=='':
+                return True
+            return False
+
+    def parseConvolve(self):
+        if self.missingKernelFieldsExist() or self.missingConvolveFieldsExist():
+            self.error("An input field is missing")
+            return
+        try:
+            padding = int(self.convolvePadding.get())
+            stride = int(self.convolveStride.get())
+            if padding<0 or padding>self.maxConvolvePadding:
+                self.error("Padding must be in the given range [0,{}]".format(self.maxConvolvePadding))
+                return
+            if stride<=0 or stride>self.calculateMaxStride():
+                self.error("Stride must be less or equal to the smallest kernel dimension minus 1")
+                return
+        except ValueError:
+            self.error("Kernel size must be an integer")
+            return
+        self.error("")
+
+        
+        for kernel in self.kernels:
+            startTime = time.time()
+            newImg = self.convolve(kernel, padding, stride)
+            elapsed = startTime-time.time()
+
+            if elapsed>(0.9*self.transitionDuration):
+                self.imageMatrix = newImg
+                self.drawCanvas()
+            else:
+                self.transition(newImg, self.transitionDuration-elapsed, self.transitionCurve)
+    
+    def convolve(self, kernel, padding=0, stride=1):
+        imgCopy = self.imageMatrix.copy()
+
+        kernel = numpy.flipud(numpy.fliplr(kernel))
+        kernShapeX = kernel.shape[0]
+        kernShapeY = kernel.shape[1]
+        imgShapeX = imgCopy.shape[0]
+        imgShapeY = imgCopy.shape[1]
+
+        outputX = int(((imgShapeX - kernShapeX + 2 * padding) / stride) + 1)
+        outputY = int(((imgShapeY - kernShapeY + 2 * padding) / strides) + 1)
+
+        output = numpy.zeros((outputX, outputY))
+        
+        if padding!=0:
+            imagePadded = numpy.zeros((imgCopy.shape[0] + padding*2, imgCopy.shape[1] + padding*2))
+            imagePadded[int(padding):int(-1 * padding), int(padding):int(-1 * padding)] = imgCopy
+        else:
+            imagePadded = imgCopy
+        
+        for 
+
+
+    def calculateMaxStride(self):
+        minDimensionSize = float('inf')
+        for kernel in self.kernels:
+            shape = kernel.shape
+            if min(shape)<minDimensionSize:
+                minDimensionSize = min(shape)
+        return minDimensionSize-1
+    
+    def missingConvolveFieldsExist(self):
+        field1 = self.convolvePadding.get()
+        field2 = self.convolveStride.get()
+        if field1=='' or field2=='':
+            return True
+        return False
+
     def packKernelWidgets(self, parent):
         self.kernelSizeFrame = tk.Frame(parent)
-        self.kernelSizeFrame.grid(row=0, column=0, sticky='nw')
+        self.kernelSizeFrame.grid(row=0, column=0, sticky='w', pady=self.paddingSmall/2)
         self.kernelGridFrame = tk.Frame(parent)
-        self.kernelGridFrame.grid(row=2, column=0)
+        self.kernelGridFrame.grid(row=2, column=0, pady=self.paddingSmall/2)
 
         self.packKernelSizeWidgts(self.kernelSizeFrame)
     
     def packKernelSizeWidgts(self, parent):
         self.kernelTitle = tk.Frame(parent)
-        self.kernelTitle.grid(row=0, column=0, pady=self.paddingSmall/2, sticky='nw')
+        self.kernelTitle.grid(row=0, column=0, sticky='nw')
         kernel_text = tk.Label(self.kernelTitle, text="Kernel", font=self.titleFont)
         kernel_text.grid(row=0, column=0, sticky='nw')
 
@@ -106,20 +228,24 @@ class App:
         kernel_size_text = tk.Label(self.kernelSize, text="Size:", font=self.normalFont)
         kernel_size_text.grid(row=0, column=0, padx=(0,self.paddingSmall))
 
-        self.kernel_num_rows = tk.Entry(self.kernelSize, width=self.numberEntrySize)
+        self.kernel_num_rows = tk.Entry(self.kernelSize, validate='key', width=self.numberEntrySize)
         self.kernel_num_rows.grid(row=0, column=1)
         
         timesSymbol = tk.Label(self.kernelSize, text="×", font=self.boldSmallFont)
         timesSymbol.grid(row=0, column=2, padx=self.paddingSmall/4)
         
-        self.kernel_num_cols = tk.Entry(self.kernelSize, width=self.numberEntrySize)
+        self.kernel_num_cols = tk.Entry(self.kernelSize, validate='key', width=self.numberEntrySize)
         self.kernel_num_cols.grid(row=0, column=3)
+
+        reg = self.kernelSize.register(self.isanInteger)
+        self.kernel_num_rows['validatecommand'] = (reg,'%P')
+        self.kernel_num_cols['validatecommand'] = (reg,'%P')
         
-        self.add_empty_kernel_bttn = tk.Button(self.kernelSize, text="+", command=lambda: self.parseAddEmptyKernel(self.kernel_num_rows.get(), self.kernel_num_cols.get()))
-        self.add_empty_kernel_bttn['font'] = self.boldNormalFont
+        self.add_empty_kernel_bttn = tk.Button(self.kernelSize, text="🡆", command=lambda: self.addEmptyKernel(self.kernel_num_rows.get(), self.kernel_num_cols.get()))
+        self.add_empty_kernel_bttn['font'] = self.normalFont
         self.add_empty_kernel_bttn.grid(row=0, column=4, padx=self.paddingSmall)
 
-    def parseAddEmptyKernel(self, numRows, numCols):
+    def addEmptyKernel(self, numRows, numCols):
         if len(self.kernels)>=2:
             self.error("You can only have a maximum of 2 kernels at once")
             return
@@ -129,7 +255,7 @@ class App:
             if numRows<=0 or numCols<=0 or numRows>self.maxKernelSize[0] or numCols>self.maxKernelSize[1]:
                 self.error("Kernel size must be in the given range [1,{}] x [1,{}]".format(self.maxKernelSize[0], self.maxKernelSize[1]))
                 return
-        except Exception:
+        except ValueError:
             self.error("Kernel size must be an integer")
             return
         self.error("")
@@ -138,43 +264,111 @@ class App:
         self.packKernelGridWidgets(self.kernelGridFrame)
 
 
-    def error(self, message):
-        self.error_msg.config(text=message)
+    def error(self, message=None):
+        self.error_msg_var.set(message)
+        if message!="":
+            self.errorBlink()
+
+    def errorExists(self):
+        exists = self.error_msg_var
+        return exists!=""
+
+    def errorBlink(self):
+        delay = 100
+        for i in range(0,4,2):
+            self.error_msg_label.after(delay*i, lambda: self.changeErrorColor('black'))
+            self.error_msg_label.after(delay*(i+1), lambda: self.changeErrorColor('red'))
+    
+    def changeErrorColor(self, color):
+        self.error_msg_label.config(fg=color)
+        self.root.update()
 
     def packKernelGridWidgets(self, parent):
-        self.kernelFrames = []
         for child in parent.winfo_children():
             child.grid_forget()
             child.destroy()
         for kernelIdx in range(len(self.kernels)):
-            kernel = self.kernels[kernelIdx]
-            
             kernelFrame = tk.Frame(parent)
             kernelFrame.grid(row=0, column=kernelIdx, padx=self.paddingMedium)
-            self.kernelFrames.append(kernelFrame)
-            
 
             kernelInputGridFrame = tk.Frame(kernelFrame)
             kernelInputGridFrame.grid(row=0, column=0)
-            self.packKernelInputGridWidgets(kernelInputGridFrame, kernel)
+            self.packKernelInputGridWidgets(kernelInputGridFrame, kernelIdx)
 
-            remove_kernel_bttn = tk.Button(kernelFrame, text="-", command=lambda: self.removeKernel(kernel, kernelFrame))
+            kernelButtonsFrame = tk.Frame(kernelFrame)
+            kernelButtonsFrame.grid(row=1, column=0)
+
+            remove_kernel_bttn = tk.Button(kernelButtonsFrame, text="x", command=lambda kernelIdx=kernelIdx: self.removeKernel(kernelIdx))
             remove_kernel_bttn['font'] = self.boldNormalFont
-            remove_kernel_bttn.grid(row=1, column=0)
-    
-    def packKernelInputGridWidgets(self, inputGridFrame, kernel):
-        pass
+            remove_kernel_bttn.grid(row=0, column=0, padx=self.paddingSmall/4)
 
-    def removeKernel(self, kernel, kernelFrame):
-        for idx in range(len(self.kernels)):
-            if kernel is self.kernels[idx]:
-                self.kernels.pop(idx)
-                break
+            norm_kernel_bttn = tk.Button(kernelButtonsFrame, text="Norm", command=lambda kernelIdx=kernelIdx: self.normalizeKernel(kernelIdx))
+            norm_kernel_bttn['font'] = self.boldNormalFont
+            norm_kernel_bttn.grid(row=0, column=1, padx=self.paddingSmall/4)
+    
+    def packKernelInputGridWidgets(self, parent, kernelIdx):
+        kernel = self.kernels[kernelIdx]
+        for row in range(kernel.shape[0]):
+            for col in range(kernel.shape[1]):
+                inputField = tk.Entry(parent, width=4, validate='key')
+                inputField.grid(row=row, column=col, padx=self.paddingSmall/4, pady=self.paddingSmall/4)
+                
+                kernVal = kernel[row,col]
+
+                #set to kernel value
+                inputField.delete(0,'end')
+                if numpy.isnan(kernVal):
+                    pass
+                elif kernVal==int(kernVal):
+                    inputField.insert(0,int(kernVal))
+                else:
+                    inputField.insert(0,kernVal)
+
+                #define validation
+                reg = inputField.register(lambda value, kernelIdx=kernelIdx, row=row, col=col: self.validateKernelInput(value, (row,col), kernelIdx))
+                inputField['validatecommand'] = (reg,'%P')
+    
+    def validateKernelInput(self, value, valueIdx, kernelIdx):
+        try:
+            value = float(value)
+            self.setKernelIndexValue(kernelIdx, valueIdx, value)
+            return True
+        except ValueError:
+            if value=='':
+                self.setKernelIndexValue(kernelIdx, valueIdx, numpy.nan)
+                return True
+            return False
+    
+    def missingKernelFieldsExist(self, kernelIdx=None):
+        if len(self.kernels)==0:
+            return True
         
+        if kernelIdx is None:
+            kernels = self.kernels
+        else:
+            kernels = [self.kernels[kernelIdx]]
+
+        for kernel in kernels:
+            if numpy.isnan(kernel).any():
+                return True
+        return False
+    
+    def setKernelIndexValue(self, kernelIdx, valueIdx, value):
+        self.kernels[kernelIdx][valueIdx[0],valueIdx[1]] = value
+
+    def removeKernel(self, kernelIdx):
+        self.kernels.pop(kernelIdx)
         self.packKernelGridWidgets(self.kernelGridFrame)
-
-        
     
+    def normalizeKernel(self, kernelIdx):
+        if self.missingKernelFieldsExist(kernelIdx):
+            self.error("An input field is missing")
+            return
+        sum = numpy.sum(self.kernels[kernelIdx])
+        if sum!=0:
+            self.kernels[kernelIdx] = self.kernels[kernelIdx]/sum
+            self.packKernelGridWidgets(self.kernelGridFrame)
+
     def loadImage(self):
         filePath = tk.filedialog.askopenfilename(filetypes=[("Image File","*.jpg *.png")])
         self.imageMatrix = cv2.imread(filePath)
