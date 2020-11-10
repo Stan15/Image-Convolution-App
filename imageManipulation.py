@@ -85,8 +85,6 @@ class App:
                 [ 1,  2,  1]
             ]),
         }
-        for key in self.presetKernels:
-            self.presetKernels[key] = self.normalizeKernel(kernel=self.presetKernels[key])
     
     def getMaxConvolPadding(self):
         minKernelDim = float('inf')
@@ -241,23 +239,19 @@ class App:
             self.imageMatrix = paddedImg
         
         for kernel in self.kernels:
-            startTime = time.time()
             if normalize:
                 kernel = self.normalizeKernel(kernel=kernel)
             newImg = self.convolve(kernel, padding, stride)
-            elapsed = time.time()-startTime
 
-            if elapsed>(0.9*self.transitionDuration):
-                self.imageMatrix = newImg
-                self.drawCanvas()
-            else:
-                self.transition(newImg, self.transitionDuration-elapsed, self.transitionCurve)
+            self.transition(newImg, self.transitionDuration, self.transitionCurve)
     
     def convolve(self, kernel, padding=0, stride=1):
         newImg = self.imageMatrix.copy()
 
         layers = self.getSelectedLayers()
         layersIdx = [self.layers.index(i) for i in layers]
+        if len(layersIdx)==0:
+            self.error("Select the RGB layers to apply filter on")
         for layer in layersIdx:
             newImg[:,:,layer] = ndimage.convolve(newImg[:,:,layer].astype('float32'), kernel.astype('float32'), mode='nearest')
         
@@ -486,6 +480,8 @@ class App:
         if filePath is None:
             extensionsFormatted = "*."+" *.".join([ext for ext in self.supportedFileTypes])
             filePath = tk.filedialog.askopenfilename(filetypes=[("Image File",extensionsFormatted)])
+            if filePath is None or filePath=='':
+                return
             self.imagePath = filePath
         try:
             image = cv2.imread(filePath)
