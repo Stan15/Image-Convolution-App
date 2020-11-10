@@ -1,28 +1,34 @@
+#external libraries (install using pip in your system terminal)
+import PIL.Image, PIL.ImageTk   #(pip install Pillow)
+import numpy                    #(pip install numpy)
+from scipy import ndimage       #(pip install scipy)
+from cv2 import cv2             #(pip install opencv-python)
+
+#native
 import tkinter as tk
 import tkinter.font as tkFont
 from tkinter import filedialog
-import PIL.Image, PIL.ImageTk 
 import time
-import numpy
-from scipy import ndimage
-from cv2 import cv2
+import copy
+import os.path
 
 class App: 
     def __init__(self, root):
         self.root = root
         self.imageMatrix = numpy.array([]).astype('uint8')
+        self.imagePath = ""
+        self.supportedFileTypes = ["png", "jpg"]
         self.layers = ['red','green','blue']
         self.identicalLayers = {}
         self.layerIsMoving = False
         
         self.kernels = []
         self.maxKernelSize = (5,5)
-        self.maxKernelCount = 1
+        self.maxKernelCount = 5
 
         self.getPresetKernels()
 
         self.defaultConvolvePadding = 0
-        self.maxConvolvePadding = 3
         self.defaultConvolveStride = 1
         
         self.settings = tk.Frame(root)
@@ -61,6 +67,13 @@ class App:
                 [2, 3, 2],
                 [1 ,2 ,1]
             ]),
+            'gaussian-blur bigger': numpy.array([
+                [0.023528,	0.033969,	0.038393,	0.033969,	0.023528],
+                [0.033969,	0.049045,	0.055432,	0.049045,	0.033969],
+                [0.038393,	0.055432,	0.062651,	0.055432,	0.038393],
+                [0.033969,	0.049045,	0.055432,	0.049045,	0.033969],
+                [0.023528,	0.033969,	0.038393,	0.033969,	0.023528]
+            ]),
             'sobel-X': numpy.array([
                 [-1, 0, 1],
                 [-2, 0, 2],
@@ -72,16 +85,43 @@ class App:
                 [ 1,  2,  1]
             ]),
         }
+        for key in self.presetKernels:
+            self.presetKernels[key] = self.normalizeKernel(kernel=self.presetKernels[key])
+    
+    def getMaxConvolPadding(self):
+        minKernelDim = float('inf')
+        for kernel in self.kernels:
+            minDim = min(kernel.shape)
+            if minDim<minKernelDim:
+                minKernelDim = minDim
+        
+        maxPadding = (minKernelDim/2)-0.5
+        if maxPadding<0:
+            maxPadding=0
+        
+        return maxPadding
+
     
     def packDisplayWidgets(self, defaultWidth, defaultHeight, minSize=100, maxSize=600):
         self.minCanvasSize = minSize
         self.maxCanvasSize = maxSize
 
-        self.canvas = tk.Canvas(self.display, width=defaultWidth, height=defaultHeight, background='white')
+        self.canvasFrame = tk.Frame(self.display)
+        self.canvasFrame.grid(row=0, column=0)
+        self.canvas = tk.Canvas(self.canvasFrame, width=defaultWidth, height=defaultHeight, background='white')
         self.canvas.pack(side='top', padx=self.paddingSmall, pady=(self.paddingSmall,self.paddingSmall/2))
+        
+        selectImageBttnFrame = tk.Frame(self.display)
+        selectImageBttnFrame.grid(row=1, column=0)
 
-        selectImageBttn = tk.Button(self.display, text="Select Image", command=self.loadImage)
-        selectImageBttn.pack(pady=(0,self.paddingSmall/2))
+        selectImageBttn = tk.Button(selectImageBttnFrame, text="Select Image", command=self.loadImage)
+        selectImageBttn.grid(row=0, column=0, padx=self.paddingSmall, pady=(0,self.paddingSmall/2))
+        
+        restoreImageBttn = tk.Button(selectImageBttnFrame, text="Restore Image", command=lambda: self.loadImage(self.imagePath))
+        restoreImageBttn.grid(row=0, column=1, padx=self.paddingSmall, pady=(0,self.paddingSmall/2))
+        
+        saveImageBttn = tk.Button(selectImageBttnFrame, text="Save Image", command=lambda: self.saveImage())
+        saveImageBttn.grid(row=0, column=2, padx=self.paddingSmall, pady=(0,self.paddingSmall/2))
     
     def packSettingsWidgets(self):
         self.layersFrame = tk.Frame(self.settings)
@@ -155,9 +195,13 @@ class App:
         self.convolvePadding['validatecommand'] = (reg,'%P')
         self.convolveStride['validatecommand'] = (reg,'%P')
 
-        self.convolve_bttn = tk.Button(self.convolveSettingsFrame, text="▶", command=lambda: self.parseConvolve())
-        self.convolve_bttn['font'] = self.titleFont
-        self.convolve_bttn.grid(row=1, column=0, columnspan=4, padx=self.paddingSmall, pady=self.paddingSmall)
+        self.convolve_bttn = tk.Button(self.convolveSettingsFrame, text="Convolve", command=lambda: self.parseConvolve(normalize=False))
+        self.convolve_bttn['font'] = self.smallFont
+        self.convolve_bttn.grid(row=1, column=0, columnspan=2, padx=self.paddingSmall, pady=self.paddingSmall)
+
+        self.convolve_bttn2 = tk.Button(self.convolveSettingsFrame, text="Norm+Conv", command=lambda: self.parseConvolve())
+        self.convolve_bttn2['font'] = self.smallFont
+        self.convolve_bttn2.grid(row=1, column=2, columnspan=2, padx=self.paddingSmall, pady=self.paddingSmall)
 
     def isanInteger(self, value):
         try:
@@ -168,15 +212,15 @@ class App:
                 return True
             return False
 
-    def parseConvolve(self):
+    def parseConvolve(self, normalize=True):
         if self.missingKernelFieldsExist() or self.missingConvolveFieldsExist():
             self.error("An input field is missing")
             return
         try:
             padding = int(self.convolvePadding.get())
             stride = int(self.convolveStride.get())
-            if padding<0 or padding>self.maxConvolvePadding:
-                self.error("Padding must be in the given range [0,{}]".format(self.maxConvolvePadding))
+            if padding<0 or padding>self.getMaxConvolPadding():
+                self.error("Padding must be from 0 to {} (half the size of your smallest kernel)".format(int(self.getMaxConvolPadding())))
                 return
             if stride<=0 or stride>self.calculateMaxStride():
                 self.error("Stride must be less or equal to the smallest kernel dimension minus 1")
@@ -187,10 +231,21 @@ class App:
         self.error("")
 
         
+        if padding != 0:
+            image_shape = self.imageMatrix.shape
+            paddedImg = numpy.zeros((image_shape[0] + padding*2, image_shape[1] + padding*2, 3))
+            for layer in range(self.imageMatrix.shape[2]):
+                layerPadded = numpy.zeros((image_shape[0] + padding*2, image_shape[1] + padding*2))
+                layerPadded[int(padding):int(-1 * padding), int(padding):int(-1 * padding)] = self.imageMatrix[:,:,layer]
+                paddedImg[:,:,layer] = layerPadded
+            self.imageMatrix = paddedImg
+        
         for kernel in self.kernels:
             startTime = time.time()
+            if normalize:
+                kernel = self.normalizeKernel(kernel=kernel)
             newImg = self.convolve(kernel, padding, stride)
-            elapsed = startTime-time.time()
+            elapsed = time.time()-startTime
 
             if elapsed>(0.9*self.transitionDuration):
                 self.imageMatrix = newImg
@@ -204,21 +259,26 @@ class App:
         layers = self.getSelectedLayers()
         layersIdx = [self.layers.index(i) for i in layers]
         for layer in layersIdx:
-            newImg[:,:,layer] = ndimage.convolve(newImg[:,:,layer].astype('uint8'), kernel, mode='constant', cval=0.0)
+            newImg[:,:,layer] = ndimage.convolve(newImg[:,:,layer].astype('float32'), kernel.astype('float32'), mode='nearest')
         
-        newIdenticalLayers = {'red':['red'], 'green': ['green'], 'blue':['blue']}
-        layersConvolved = layers
-        for layer in layersConvolved:
-            identical = list(set(self.identicalLayers[layer])-set(layer))
-            for l in identical:
-                if l in layersConvolved:
-                    newIdenticalLayers[layer].append(l)
-        
-        self.resetIdenticalLayers(newIdenticalLayers)
-        
-        self.clearLayersSelection()
+        newIdenticalLayers = copy.deepcopy(self.identicalLayers)
+        #fix for some random addressing problem in the array that i have no idea why it's happening
+        for key in newIdenticalLayers:
+            newIdenticalLayers[key] = [newIdenticalLayers[key][idx] for idx in range(len(newIdenticalLayers[key]))]
 
-        return newImg
+        layersConvolved = layers
+        if not (len(self.identicalLayers['red'])==3 and len(layersConvolved)==3):  #if they are both 3, then we are convolving all layers and they are already identical. skip
+            for layer in layersConvolved:
+                identical = list(set(self.identicalLayers[layer])-{layer})
+                for l in identical:
+                    if l not in layersConvolved:
+                        newIdenticalLayers[l].remove(layer)
+                        newIdenticalLayers[layer].remove(l)
+            
+            self.resetIdenticalLayers(identical=newIdenticalLayers)
+        
+
+        return newImg.astype('uint8')
 
 
     def calculateMaxStride(self):
@@ -345,7 +405,7 @@ class App:
             remove_kernel_bttn['font'] = self.boldNormalFont
             remove_kernel_bttn.grid(row=0, column=0, padx=self.paddingSmall/4)
 
-            norm_kernel_bttn = tk.Button(kernelButtonsFrame, text="Norm", command=lambda kernelIdx=kernelIdx: self.normalizeKernel(kernelIdx))
+            norm_kernel_bttn = tk.Button(kernelButtonsFrame, text="Norm", command=lambda idx=kernelIdx: self.normalizeKernel(kernelIdx=idx))
             norm_kernel_bttn['font'] = self.boldNormalFont
             norm_kernel_bttn.grid(row=0, column=1, padx=self.paddingSmall/4)
     
@@ -403,29 +463,69 @@ class App:
         self.kernels.pop(kernelIdx)
         self.packKernelGridWidgets(self.kernelGridFrame)
     
-    def normalizeKernel(self, kernelIdx):
-        if self.missingKernelFieldsExist(kernelIdx):
-            self.error("An input field is missing")
+    def normalizeKernel(self, kernelIdx=None, kernel=None):
+        if kernelIdx is None and kernel is None:
             return
-        sum = numpy.sum(self.kernels[kernelIdx])
-        if sum!=0:
-            self.kernels[kernelIdx] = self.kernels[kernelIdx]/sum
-            self.packKernelGridWidgets(self.kernelGridFrame)
+        elif kernelIdx is not None:
+            if self.missingKernelFieldsExist(kernelIdx):
+                self.error("An input field is missing")
+                return
+            sum = numpy.sum(numpy.absolute(self.kernels[kernelIdx]))
+            if sum!=0:
+                self.kernels[kernelIdx] = self.kernels[kernelIdx]/sum
+                self.packKernelGridWidgets(self.kernelGridFrame)
+        elif kernel is not None:
+            sum = numpy.sum(numpy.absolute(kernel))
+            if sum!=0:
+                kernel = kernel/sum
+                return kernel
+        return
 
-    def loadImage(self):
-        filePath = tk.filedialog.askopenfilename(filetypes=[("Image File","*.jpg *.png")])
-        self.imageMatrix = cv2.imread(filePath)
+
+    def loadImage(self, filePath=None):
+        if filePath is None:
+            extensionsFormatted = "*."+" *.".join([ext for ext in self.supportedFileTypes])
+            filePath = tk.filedialog.askopenfilename(filetypes=[("Image File",extensionsFormatted)])
+            self.imagePath = filePath
+        try:
+            image = cv2.imread(filePath)
+            if image is None:
+                raise Exception
+            self.imageMatrix = image
+        except Exception:
+            self.error("File does not exist")
+            return
         self.imageMatrix = cv2.cvtColor(self.imageMatrix, cv2.COLOR_BGR2RGB)
         self.layers = ['red','green','blue']
         self.resetIdenticalLayers()
         self.updateLayersListBox()
-        self.clearLayersSelection()
         self.drawCanvas()
-        pass
+    
+    def saveImage(self):
+        if self.imageMatrix.size==0:
+            self.error("No image on display")
+            return
+                
+        imageName = os.path.basename(self.imagePath)
+        imageExtension = ""
+        for fileType in self.supportedFileTypes:
+            if imageName.endswith(".{}".format(fileType)):
+                imageName = imageName[:-(len(fileType)+1)]
+                imageExtension = fileType
+                break
+        imageName = "{}-modified.{}".format(imageName, imageExtension)
+        
+        currentImgDir = os.path.dirname(os.path.abspath(self.imagePath))
+        fileSaveFolder = tk.filedialog.askdirectory(initialdir=currentImgDir)
+        imagePath = os.path.join(fileSaveFolder, imageName)
+        cv2.imwrite(imagePath, self.imageMatrix)
+        
 
     def flattenLayers(self,layersToCombine):
-        if len(layersToCombine)<=1 or len(self.identicalLayers['red'])==3: #that means that all three (red, green and blue) are equal, so flattening does nothing
+        if len(layersToCombine)<=1:
             self.clearLayersSelection()
+            return
+        if len(self.identicalLayers['red'])==3: #that means that all three (red, green and blue) are equal, so flattening does nothing
             return
         
         layersIdx = [self.layers.index(layer) for layer in layersToCombine]
@@ -446,9 +546,8 @@ class App:
             if layer in layersToCombine:
                 newIdenticalLayers[key] = layersToCombine
         
-        self.resetIdenticalLayers(newIdenticalLayers)
+        self.resetIdenticalLayers(identical=newIdenticalLayers)
         
-        self.clearLayersSelection()
         if self.isTransitionEnabled:
             self.transition(newImg, self.transitionDuration, self.transitionCurve)
         else:
@@ -572,7 +671,7 @@ class App:
         self.layersListBox.config(width=0, height=0)
         self.settings.winfo_toplevel().wm_geometry("")
         
-        self.resetIdenticalLayers(self.identicalLayers)
+        self.resetIdenticalLayers(identical=self.identicalLayers)
 
     def getSelectedLayers(self):
         selectedLayers = [self.layersListBox.get(idx) for idx in self.layersListBox.curselection()]
