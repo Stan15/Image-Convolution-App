@@ -2,7 +2,7 @@
 This project is built mainly on the python libraries "Tkinter", "numpy", "sci-py", and "open-cv" and serves the purpose of helping me better understand the image manipulation techniques used in convolutional neural networks by understanding how convolutions are applied and the effects of different kernel shapes and values on an image onto which it is convolved.
 
 # Sobel edge detector demo
-custom filters/kernels can be created or default, built-in filters like the gaussian blur of the sobel filters can be used.
+custom filters/kernels can be created or default, built-in filters like the gaussian blur or the sobel filters can be used.
 
 Steps for sobel edge detection:
 1. apply the sobel Y filter to find the vertical edges.
