@@ -6,7 +6,7 @@ custom filters/kernels can be created or default, built-in filters like the gaus
 
 Steps for sobel edge detection:
 1. apply the sobel Y filter to find the vertical edges.
-2. apply the sobel x filter to find the horizontal edges.
+2. apply the sobel X filter to find the horizontal edges.
 3. flatten the two to get an image where brightness represents the "sharpness" of an edge.
 
 [![sobel demo](https://user-images.githubusercontent.com/47716543/103279510-f68b1280-499b-11eb-96c9-ff25585a5065.png)](https://user-images.githubusercontent.com/47716543/103278314-33a1d580-4999-11eb-8214-d5eafd0e09ee.mp4 "Applying the sobel edge detection filters")
